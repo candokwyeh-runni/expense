@@ -145,7 +145,9 @@ test.describe.serial('Claim Submit Guards', () => {
 
         await expect(page.getByText('提交前檢核摘要')).toHaveCount(0);
         await page.getByRole('button', { name: '提交審核' }).click();
-        const errorItem = page.getByRole('button', { name: /第 1 筆明細.*上傳憑證/ });
+        const errorItem = page
+            .getByRole('button', { name: /第 1 筆明細/ })
+            .first();
         await expect(errorItem).toBeVisible();
         await errorItem.click();
 

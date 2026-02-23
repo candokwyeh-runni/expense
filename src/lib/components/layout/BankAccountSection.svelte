@@ -108,7 +108,6 @@
                                 ? decryptedAccount || "請輸入新帳號..."
                                 : "••••••••••••"}
                             disabled={revealing}
-                            required={isManagement && isEditing}
                         />
                     {:else if isPayee && isEditing}
                         <Input

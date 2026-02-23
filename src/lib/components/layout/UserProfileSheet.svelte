@@ -463,11 +463,16 @@
                     result.data &&
                     "decryptedAccount" in result.data
                 ) {
-                    decryptedAccount = String(result.data.decryptedAccount);
+                    const raw = result.data.decryptedAccount;
+                    decryptedAccount =
+                        raw != null && String(raw) !== "null"
+                            ? String(raw)
+                            : "";
                     if (
                         isManagementMode &&
                         isEditing &&
-                        !inputBankAccount.trim()
+                        !inputBankAccount.trim() &&
+                        decryptedAccount
                     ) {
                         inputBankAccount = decryptedAccount;
                     }

@@ -13,6 +13,13 @@ const supabase = createClient(
 );
 
 const TEST_USER_EMAIL_SUFFIX = "@example.com";
+const TEST_RUNNII_PREFIXES = [
+    "admin_test_",
+    "state_app_",
+    "state_mgr_",
+    "state_fin_",
+    "claim_detail_",
+];
 const TEST_NAME_PATTERNS = [
     "%E2E%",
     "%Test%",
@@ -77,7 +84,16 @@ async function listTestUserIds() {
         const users = data?.users || [];
         for (const user of users) {
             const email = String(user.email || "").toLowerCase();
-            if (email.endsWith(TEST_USER_EMAIL_SUFFIX)) ids.push(user.id);
+            if (email.endsWith(TEST_USER_EMAIL_SUFFIX)) {
+                ids.push(user.id);
+                continue;
+            }
+            if (email.endsWith("@runnii.com")) {
+                const localPart = email.split("@")[0] || "";
+                if (TEST_RUNNII_PREFIXES.some((prefix) => localPart.startsWith(prefix))) {
+                    ids.push(user.id);
+                }
+            }
         }
         if (users.length < perPage) break;
         page += 1;
@@ -106,10 +122,24 @@ async function cleanupTestData() {
         const claimIds = (claims || []).map((item) => item.id);
 
         if (claimIds.length > 0) {
+            await supabase.from("notification_logs").delete().in("claim_id", claimIds);
+            await supabase.from("notification_jobs").delete().in("claim_id", claimIds);
             await supabase.from("claim_history").delete().in("claim_id", claimIds);
             await supabase.from("claim_items").delete().in("claim_id", claimIds);
         }
 
+        await supabase
+            .from("notification_logs")
+            .delete()
+            .in("recipient_user_id", testUserIds);
+        await supabase
+            .from("notification_jobs")
+            .delete()
+            .in("recipient_user_id", testUserIds);
+        await supabase
+            .from("notification_jobs")
+            .delete()
+            .in("actor_id", testUserIds);
         await supabase.from("claim_history").delete().in("actor_id", testUserIds);
         await supabase.from("claims").delete().in("applicant_id", testUserIds);
         await supabase

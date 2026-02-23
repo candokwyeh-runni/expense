@@ -19,6 +19,11 @@ function cid(prefix: string) {
 }
 
 async function expectStatus(id: string, status: string) {
+    for (let i = 0; i < 20; i++) {
+        const { data } = await supabaseAdmin.from('claims').select('status').eq('id', id).single();
+        if (data?.status === status) return;
+        await sleep(200);
+    }
     const { data } = await supabaseAdmin.from('claims').select('status').eq('id', id).single();
     expect(data?.status).toBe(status);
 }
@@ -31,7 +36,7 @@ test.describe.serial('Claim Status Machine', () => {
     test.beforeAll(async () => {
         const ts = Date.now();
         const { data: a } = await supabaseAdmin.auth.admin.createUser({
-            email: `state_app_${ts}@example.com`,
+            email: `state_app_${ts}@runnii.com`,
             password,
             email_confirm: true,
             user_metadata: { full_name: `State Applicant ${ts}` }
@@ -40,7 +45,7 @@ test.describe.serial('Claim Status Machine', () => {
         await waitForProfile(applicant.id);
 
         const { data: m } = await supabaseAdmin.auth.admin.createUser({
-            email: `state_mgr_${ts}@example.com`,
+            email: `state_mgr_${ts}@runnii.com`,
             password,
             email_confirm: true,
             user_metadata: { full_name: `State Manager ${ts}` }
@@ -49,7 +54,7 @@ test.describe.serial('Claim Status Machine', () => {
         await waitForProfile(manager.id);
 
         const { data: f } = await supabaseAdmin.auth.admin.createUser({
-            email: `state_fin_${ts}@example.com`,
+            email: `state_fin_${ts}@runnii.com`,
             password,
             email_confirm: true,
             user_metadata: { full_name: `State Finance ${ts}` }

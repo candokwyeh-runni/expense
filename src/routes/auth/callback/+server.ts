@@ -16,6 +16,17 @@ const sanitizeRedirectPath = (next: string | null): string => {
     return next;
 };
 
+const isDomainRestrictionError = (text: string | null | undefined): boolean => {
+    if (!text) return false;
+    const normalized = text.toLowerCase();
+    return (
+        normalized.includes('domain') ||
+        normalized.includes('forbidden') ||
+        normalized.includes('not allowed') ||
+        normalized.includes('runnii.com')
+    );
+};
+
 export const GET: RequestHandler = async (event) => {
     const {
         url,
@@ -24,9 +35,17 @@ export const GET: RequestHandler = async (event) => {
 
     // 從 URL 參數中獲取授權碼 (code)
     const code = url.searchParams.get('code');
+    const oauthError = url.searchParams.get('error');
+    const oauthErrorDescription = url.searchParams.get('error_description');
 
     // 获取跳轉路徑，預設回首頁
     const next = sanitizeRedirectPath(url.searchParams.get('next'));
+
+    if (oauthError) {
+        const restricted = isDomainRestrictionError(oauthErrorDescription) || isDomainRestrictionError(oauthError);
+        const reason = restricted ? 'domain_restricted' : 'oauth_failed';
+        throw redirect(303, `/auth?reason=${reason}`);
+    }
 
     if (code) {
         /**
@@ -34,7 +53,10 @@ export const GET: RequestHandler = async (event) => {
          * 這是一個伺服器對伺服器 (S2S) 的請求。
          * 成功後，Supabase SSR 會自動透過 supabaseHandle 設定 Cookie。
          */
-        const { data: { session }, error } = await supabase.auth.exchangeCodeForSession(code);
+        const {
+            data: { session },
+            error
+        } = await supabase.auth.exchangeCodeForSession(code);
 
         if (!error && session?.user) {
             // Profile 存在性檢查：確保新使用者登入後自動建立資料
@@ -62,12 +84,17 @@ export const GET: RequestHandler = async (event) => {
             // 成功交換 Session，導向至安全路徑
             throw redirect(303, next);
         }
+
+        if (error) {
+            const restricted = isDomainRestrictionError(error.message) || isDomainRestrictionError(error.code);
+            const reason = restricted ? 'domain_restricted' : 'oauth_failed';
+            throw redirect(303, `/auth?reason=${reason}`);
+        }
     }
 
     /**
      * 出錯處理：
      * 如果沒有 code 或交換代碼失敗，導向至錯誤顯示頁面。
-     * (需在 routes/auth/下建立對應頁面)
      */
-    throw redirect(303, '/auth/auth-code-error');
+    throw redirect(303, '/auth?reason=oauth_failed');
 };

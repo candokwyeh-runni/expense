@@ -67,10 +67,51 @@ const rawCreateUser = authAdmin.createUser.bind(authAdmin);
 const rawDeleteUser = authAdmin.deleteUser.bind(authAdmin);
 const rawListUsers = authAdmin.listUsers.bind(authAdmin);
 
+async function cleanupTestUserReferences(userId: string) {
+    // Break profile self-references first.
+    await supabaseAdmin.from('profiles').update({ approver_id: null }).eq('approver_id', userId);
+    await supabaseAdmin.from('profiles').update({ deactivated_by: null }).eq('deactivated_by', userId);
+
+    // Notification tables can retain FK to profiles and block hard delete.
+    await supabaseAdmin.from('notification_logs').delete().eq('recipient_user_id', userId);
+    await supabaseAdmin.from('notification_jobs').delete().eq('recipient_user_id', userId);
+    await supabaseAdmin.from('notification_jobs').delete().eq('actor_id', userId);
+
+    // Payee request links.
+    await supabaseAdmin.from('payee_change_requests').delete().eq('requested_by', userId);
+    await supabaseAdmin.from('payee_change_requests').delete().eq('reviewed_by', userId);
+
+    // Claim/payment links.
+    const { data: claims } = await supabaseAdmin.from('claims').select('id').eq('applicant_id', userId);
+    const claimIds = (claims || []).map((item) => item.id);
+    if (claimIds.length > 0) {
+        await supabaseAdmin.from('notification_logs').delete().in('claim_id', claimIds);
+        await supabaseAdmin.from('notification_jobs').delete().in('claim_id', claimIds);
+        await supabaseAdmin.from('claim_history').delete().in('claim_id', claimIds);
+        await supabaseAdmin.from('claim_items').delete().in('claim_id', claimIds);
+    }
+
+    await supabaseAdmin.from('claim_history').delete().eq('actor_id', userId);
+    await supabaseAdmin.from('claims').delete().eq('applicant_id', userId);
+    await supabaseAdmin.from('payments').delete().eq('paid_by', userId);
+    await supabaseAdmin.from('profiles').delete().eq('id', userId);
+}
+
 authAdmin.createUser = ((attributes: Parameters<typeof rawCreateUser>[0]) =>
     withNetworkRetry(() => rawCreateUser(attributes))) as typeof authAdmin.createUser;
 authAdmin.deleteUser = ((id: Parameters<typeof rawDeleteUser>[0], shouldSoftDelete?: Parameters<typeof rawDeleteUser>[1]) =>
-    withNetworkRetry(() => rawDeleteUser(id, shouldSoftDelete))) as typeof authAdmin.deleteUser;
+    withNetworkRetry(async () => {
+        const firstTry = await rawDeleteUser(id, shouldSoftDelete);
+        if (
+            firstTry.error &&
+            !shouldSoftDelete &&
+            String(firstTry.error.message || '').includes('Database error deleting user')
+        ) {
+            await cleanupTestUserReferences(String(id));
+            return rawDeleteUser(id, shouldSoftDelete);
+        }
+        return firstTry;
+    })) as typeof authAdmin.deleteUser;
 authAdmin.listUsers = ((params?: Parameters<typeof rawListUsers>[0]) =>
     withNetworkRetry(() => rawListUsers(params))) as typeof authAdmin.listUsers;
 

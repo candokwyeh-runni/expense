@@ -33,22 +33,22 @@ test.describe.serial('Claim Detail Page', () => {
     async function openFirstItemDialog(page: any) {
         const row = page.getByTestId('claim-item-row-0');
         await expect(row).toBeVisible();
-        const dialog = page.locator('[data-slot="dialog-content"]');
+        const openDialog = page.locator('[data-slot="dialog-content"][data-state="open"]').first();
 
         // E2E 全量並行時偶發第一次點擊未開啟，這裡做一次重試降低 flaky
         for (let attempt = 0; attempt < 2; attempt++) {
             await row.click();
-            if (await dialog.isVisible({ timeout: 2500 }).catch(() => false)) {
-                return dialog;
+            if (await openDialog.isVisible({ timeout: 2500 }).catch(() => false)) {
+                return openDialog;
             }
         }
-        await expect(dialog).toBeVisible();
-        return dialog;
+        await expect(openDialog).toBeVisible();
+        return openDialog;
     }
 
     test.beforeAll(async () => {
         // Create test user
-        const email = `claim_detail_${Date.now()}_${Math.floor(Math.random() * 1000)}@example.com`;
+        const email = `claim_detail_${Date.now()}_${Math.floor(Math.random() * 1000)}@runnii.com`;
         const { data, error } = await supabaseAdmin.auth.admin.createUser({
             email,
             password,
@@ -132,7 +132,16 @@ test.describe.serial('Claim Detail Page', () => {
             )
         });
         await dialog.getByRole('button', { name: '儲存明細' }).click();
-        await expect(dialog).not.toBeVisible();
+        // 新版可能「儲存後自動關閉」或「儲存後維持開啟」；兩種都接受。
+        if (await dialog.count()) {
+            const closeButton = dialog.getByRole('button', { name: 'Close' });
+            if (await closeButton.isVisible().catch(() => false)) {
+                await closeButton.click();
+            } else {
+                await page.keyboard.press('Escape');
+            }
+        }
+        await expect(page.locator('[data-slot="dialog-content"][data-state="open"]')).toHaveCount(0);
         await page.getByRole('button', { name: '儲存變更' }).click();
         await expect(page).toHaveURL(new RegExp(`/claims/${claimId}`));
         await expect(page.getByRole('button', { name: '儲存變更' })).toBeVisible();

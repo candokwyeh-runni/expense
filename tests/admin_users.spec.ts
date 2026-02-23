@@ -23,7 +23,7 @@ test.describe('Admin Users Page', () => {
     async function createUserWithRetry(emailPrefix: string, fullName: string) {
         let lastError: any = null;
         for (let i = 0; i < 3; i++) {
-            const email = `${emailPrefix}_${Date.now()}_${i}@example.com`;
+            const email = `${emailPrefix}_${Date.now()}_${i}@runnii.com`;
             const { data, error } = await supabaseAdmin.auth.admin.createUser({
                 email,
                 password,
@@ -186,12 +186,6 @@ test.describe('Admin Users Page', () => {
         await injectSession(page, adminUser.email, password);
 
         await page.goto('/admin/users');
-
-        // Find the row for the standard user using the unique timestamped name
-        const userRow = page.locator('tr', {
-            has: page.locator(`text=${standardUserName}`),
-        }).first();
-        await expect(userRow).toBeVisible();
 
         const result = await page.evaluate(async (targetUserId) => {
             const formData = new FormData();

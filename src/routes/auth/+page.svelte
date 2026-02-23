@@ -22,6 +22,10 @@
             authNotice = "此帳號已停用，請聯絡管理員協助重新啟用。";
         } else if (reason === "profile_missing") {
             authNotice = "帳號資料異常，請重新登入或聯絡管理員。";
+        } else if (reason === "domain_restricted") {
+            authNotice = "此網站僅允許公司網域（@runnii.com）登入，請改用公司帳號。";
+        } else if (reason === "oauth_failed") {
+            authNotice = "登入驗證失敗，請稍後重試；若持續失敗請聯絡管理員。";
         }
     });
 
