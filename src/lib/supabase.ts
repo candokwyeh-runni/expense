@@ -64,8 +64,26 @@ export const supabaseHandle: Handle = async ({ event, resolve }) => {
         sessionPromise = (async () => {
             const {
                 data: { user },
+                error: userError,
             } = await event.locals.supabase.auth.getUser();
-            if (!user) return null;
+
+            if (!user) {
+                // If getUser() failed due to a transient error (rate limit / network),
+                // fall back to the local JWT session to avoid incorrect auth redirects.
+                if (userError) {
+                    const isTransient =
+                        userError.status === 429 ||
+                        /rate limit|over_request_rate_limit|fetch failed|network|timed out/i.test(
+                            String(userError.message || '')
+                        );
+                    if (isTransient) {
+                        console.warn('[auth] getUser() transient failure, falling back to getSession():', userError.message);
+                        const { data: { session } } = await event.locals.supabase.auth.getSession();
+                        return session;
+                    }
+                }
+                return null;
+            }
 
             const {
                 data: { session },

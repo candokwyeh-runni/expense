@@ -203,6 +203,15 @@ test.describe('Payee Management Extended Flow', () => {
             .maybeSingle();
 
         if (approvedError) throw approvedError;
-        expect(approvedRequest?.status).toBe('approved');
+        if (approvedRequest?.status !== 'approved') {
+            await expect.poll(async () => {
+                const { data } = await supabaseAdmin
+                    .from('payee_change_requests')
+                    .select('status')
+                    .eq('id', pendingRequest!.id)
+                    .maybeSingle();
+                return data?.status;
+            }, { timeout: 10000 }).toBe('approved');
+        }
     });
 });

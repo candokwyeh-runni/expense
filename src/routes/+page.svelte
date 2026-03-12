@@ -8,9 +8,8 @@
      */
     let { data } = $props();
 
-    const supabase = createBrowserSupabaseClient();
-
     const signInWithGoogle = async () => {
+        const supabase = createBrowserSupabaseClient();
         await supabase.auth.signInWithOAuth({
             provider: "google",
             options: {

@@ -10,6 +10,8 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { Page } from '@playwright/test';
 import * as dotenv from 'dotenv';
 import { readFileSync } from 'fs';
+import { stringToBase64URL } from '@supabase/ssr/dist/module/utils/base64url.js';
+import { createChunks } from '@supabase/ssr/dist/module/utils/chunker.js';
 
 // 載入環境變數
 const envConfig = dotenv.parse(readFileSync('.env'));
@@ -163,48 +165,53 @@ export async function injectSession(page: Page, email: string, password: string)
     const session = await authSignInWithRetry(client, email, password);
 
     const storageKey = `sb-${projectRef}-auth-token`;
+    const encodedSession = `base64-${stringToBase64URL(JSON.stringify(session))}`;
+    const sessionCookies = createChunks(storageKey, encodedSession);
 
-    // 寫入 Cookie（SSR）
-    // Set cookies for both localhost and 127.0.0.1 to match baseURL usage.
-    await page.context().addCookies([
-        {
-            name: storageKey,
-            value: JSON.stringify(session),
-            domain: 'localhost',
-            path: '/',
+    // 依 @supabase/ssr 的 cookie encoding/chunking 規則寫入 SSR cookie。
+    await page.context().addCookies(
+        sessionCookies.map(({ name, value }) => ({
+            name,
+            value,
+            url: 'http://localhost:5173',
             httpOnly: false,
             secure: false,
-            sameSite: 'Lax',
-        },
-        {
-            name: storageKey,
-            value: JSON.stringify(session),
-            domain: '127.0.0.1',
-            path: '/',
-            httpOnly: false,
-            secure: false,
-            sameSite: 'Lax',
-        },
-    ]);
+            sameSite: 'Lax' as const,
+        }))
+    );
 
-    // 寫入 LocalStorage（CSR）
-    await page.goto('/');
-    await page.evaluate(({ key, value }) => {
+    // 讓第一個實際導頁前就具備 CSR session。
+    await page.addInitScript(({ key, value }) => {
         localStorage.setItem(key, JSON.stringify(value));
     }, { key: storageKey, value: session });
-
-    await page.reload();
 }
 
 type FormValue = string | string[];
+const TEST_BASE_ORIGIN = 'http://localhost:5173';
+
+async function ensureActionOrigin(page: Page) {
+    const currentUrl = page.url();
+    if (!/^https?:\/\//i.test(currentUrl)) {
+        await page.goto(TEST_BASE_ORIGIN, { waitUntil: 'domcontentloaded' });
+    }
+}
 
 export async function postFormAction(
     page: Page,
     url: string,
     form: Record<string, FormValue> = {}
 ) {
+    await ensureActionOrigin(page);
     return page.evaluate(
-        async ({ targetUrl, payload }: { targetUrl: string; payload: Record<string, FormValue> }) => {
+        async ({
+            targetUrl,
+            payload,
+            baseOrigin,
+        }: {
+            targetUrl: string;
+            payload: Record<string, FormValue>;
+            baseOrigin: string;
+        }) => {
             const fd = new FormData();
             for (const [k, v] of Object.entries(payload)) {
                 if (Array.isArray(v)) {
@@ -213,9 +220,15 @@ export async function postFormAction(
                     fd.append(k, v);
                 }
             }
+            const locationOrigin =
+                typeof window !== "undefined" &&
+                window.location?.origin?.startsWith("http")
+                    ? window.location.origin
+                    : baseOrigin;
+            const resolvedUrl = new URL(targetUrl, locationOrigin).toString();
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 20000);
-            const res = await fetch(targetUrl, {
+            const res = await fetch(resolvedUrl, {
                 method: 'POST',
                 body: fd,
                 headers: { 'x-sveltekit-action': 'true' },
@@ -224,7 +237,7 @@ export async function postFormAction(
             clearTimeout(timeout);
             return res.text();
         },
-        { targetUrl: url, payload: form }
+        { targetUrl: url, payload: form, baseOrigin: TEST_BASE_ORIGIN }
     );
 }
 
@@ -233,8 +246,17 @@ export async function postFormActionDetailed(
     url: string,
     form: Record<string, FormValue> = {}
 ) {
+    await ensureActionOrigin(page);
     return page.evaluate(
-        async ({ targetUrl, payload }: { targetUrl: string; payload: Record<string, FormValue> }) => {
+        async ({
+            targetUrl,
+            payload,
+            baseOrigin,
+        }: {
+            targetUrl: string;
+            payload: Record<string, FormValue>;
+            baseOrigin: string;
+        }) => {
             const fd = new FormData();
             for (const [k, v] of Object.entries(payload)) {
                 if (Array.isArray(v)) {
@@ -243,9 +265,15 @@ export async function postFormActionDetailed(
                     fd.append(k, v);
                 }
             }
+            const locationOrigin =
+                typeof window !== "undefined" &&
+                window.location?.origin?.startsWith("http")
+                    ? window.location.origin
+                    : baseOrigin;
+            const resolvedUrl = new URL(targetUrl, locationOrigin).toString();
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 20000);
-            const res = await fetch(targetUrl, {
+            const res = await fetch(resolvedUrl, {
                 method: 'POST',
                 body: fd,
                 headers: { 'x-sveltekit-action': 'true' },
@@ -254,6 +282,6 @@ export async function postFormActionDetailed(
             clearTimeout(timeout);
             return { url: res.url, body: await res.text(), status: res.status };
         },
-        { targetUrl: url, payload: form }
+        { targetUrl: url, payload: form, baseOrigin: TEST_BASE_ORIGIN }
     );
 }

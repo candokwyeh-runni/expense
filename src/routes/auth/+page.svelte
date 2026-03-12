@@ -10,8 +10,6 @@
         CardTitle,
     } from "$lib/components/ui/card";
 
-    // 初始化瀏覽器端 Supabase Client
-    const supabase = createBrowserSupabaseClient();
     let authNotice = $state("");
 
     onMount(() => {
@@ -33,6 +31,7 @@
      * 執行 Google OAuth 登入
      */
     async function loginWithGoogle() {
+        const supabase = createBrowserSupabaseClient();
         const next = new URLSearchParams(window.location.search).get("next");
         const safeNext = next && next.startsWith("/") && !next.startsWith("//")
             ? next

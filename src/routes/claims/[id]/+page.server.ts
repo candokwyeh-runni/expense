@@ -40,6 +40,30 @@ async function requireSession(getSession: () => Promise<any>, message = 'Unautho
     return { ok: true as const, session };
 }
 
+function isRequestAbortError(error: unknown): boolean {
+    const text = String(
+        (error as any)?.message ||
+        (error as any)?.cause?.message ||
+        error ||
+        ''
+    ).toLowerCase();
+    return text === 'aborted' || text.includes('request aborted');
+}
+
+async function readFormDataOrAbort(request: Request) {
+    try {
+        return { ok: true as const, formData: await request.formData() };
+    } catch (error) {
+        if (isRequestAbortError(error)) {
+            return {
+                ok: false as const,
+                response: fail(499, { message: 'Request aborted' })
+            };
+        }
+        throw error;
+    }
+}
+
 async function resolveReviewContext(supabase: any, claimId: string, reviewerId: string) {
     const { data: claim } = await supabase
         .from('claims')
@@ -66,6 +90,85 @@ async function requireOwnedClaim(supabase: any, claimId: string, userId: string)
         return { ok: false as const, response: fail(404, { message: 'Claim not found' }) };
     }
     return { ok: true as const, claim };
+}
+
+async function getClaimAccessContext(supabase: any, claimId: string, viewerId: string) {
+    const { data: claim } = await supabase
+        .from('claims')
+        .select('id, applicant_id, status, bank_code, applicant:profiles!claims_applicant_id_fkey(approver_id)')
+        .eq('id', claimId)
+        .single();
+    if (!claim) {
+        return { ok: false as const, response: fail(404, { message: 'Claim not found' }) };
+    }
+
+    const { data: profile } = await supabase
+        .from('profiles')
+        .select('is_finance, is_admin')
+        .eq('id', viewerId)
+        .single();
+
+    const applicantObj = Array.isArray(claim.applicant) ? claim.applicant[0] : claim.applicant;
+    const isApplicant = claim.applicant_id === viewerId;
+    const isApprover = applicantObj?.approver_id === viewerId;
+    const isFinance = Boolean(profile?.is_finance);
+    const isAdmin = Boolean(profile?.is_admin);
+    const canView =
+        isApplicant ||
+        isFinance ||
+        isAdmin ||
+        isApprover ||
+        claim.status === 'pending_manager';
+
+    if (!canView) {
+        return { ok: false as const, response: fail(403, { message: 'Forbidden' }) };
+    }
+
+    return { ok: true as const, claim, viewer: { isApplicant, isApprover, isFinance, isAdmin } };
+}
+
+async function getClaimBankSnapshot(supabase: any, claimId: string) {
+    const { data, error } = await supabase.rpc('get_claim_detail', {
+        _claim_id: claimId
+    });
+    if (error) {
+        return { ok: false as const, error };
+    }
+
+    const row = Array.isArray(data) ? data[0] : data;
+    return {
+        ok: true as const,
+        detail: row
+            ? {
+                bank_code: String(row.bank_code || '').trim(),
+                bank_account: String(row.bank_account || '').trim()
+            }
+            : null
+    };
+}
+
+async function deleteClaimCascade(supabase: any, claimId: string) {
+    const cleanupResults = await Promise.all([
+        supabase.from('notification_logs').delete().eq('claim_id', claimId),
+        supabase.from('notification_jobs').delete().eq('claim_id', claimId),
+        supabase.from('claim_history').delete().eq('claim_id', claimId),
+        supabase.from('claim_items').delete().eq('claim_id', claimId)
+    ]);
+
+    const cleanupError = cleanupResults.find((result) => result.error)?.error;
+    if (cleanupError) {
+        return { ok: false as const, error: cleanupError };
+    }
+
+    const { error: deleteError } = await supabase
+        .from('claims')
+        .delete()
+        .eq('id', claimId);
+    if (deleteError) {
+        return { ok: false as const, error: deleteError };
+    }
+
+    return { ok: true as const };
 }
 
 async function runEditAction({
@@ -98,7 +201,9 @@ async function runEditAction({
         });
     }
 
-    const formData = await request.formData();
+    const formDataResult = await readFormDataOrAbort(request);
+    if (!formDataResult.ok) return formDataResult.response;
+    const formData = formDataResult.formData;
     const parsed = parseAndValidateEditForm(formData, claimRow as EditableClaimRow, params.id, {
         isDraft: mode === 'update'
     });
@@ -198,6 +303,18 @@ export const load: PageServerLoad = async ({ params, locals: { supabase, getSess
         claim.items.sort((a: any, b: any) => a.item_index - b.item_index);
     }
 
+    const claimBankSnapshot = await getClaimBankSnapshot(supabase, id);
+    if (!claimBankSnapshot.ok) {
+        console.warn('Claim bank snapshot load failed:', claimBankSnapshot.error);
+    }
+
+    const floatingBankCode = claimBankSnapshot.ok
+        ? claimBankSnapshot.detail?.bank_code || ''
+        : '';
+    const floatingBankAccount = claimBankSnapshot.ok
+        ? claimBankSnapshot.detail?.bank_account || ''
+        : '';
+
     const sortedHistory = (history || []).sort(
         (a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
@@ -219,6 +336,11 @@ export const load: PageServerLoad = async ({ params, locals: { supabase, getSess
     return {
         claim: {
             ...claim,
+            bank_code: floatingBankCode || claim.bank_code || '',
+            bank_account: floatingBankAccount || '',
+            claim_bank_account_tail: floatingBankAccount
+                ? floatingBankAccount.slice(-5)
+                : '',
             history: sortedHistory
         },
         user: { id: session.user.id, isFinance, isAdmin, isApprover },
@@ -235,7 +357,9 @@ export const actions: Actions = {
         const auth = await requireSession(getSession, '未登入');
         if (!auth.ok) return auth.response;
 
-        const formData = await request.formData();
+        const formDataResult = await readFormDataOrAbort(request);
+        if (!formDataResult.ok) return formDataResult.response;
+        const formData = formDataResult.formData;
         const targetId = String(formData.get('targetId') || '').trim();
         if (!targetId) return fail(400, { message: 'Missing targetId' });
 
@@ -254,7 +378,9 @@ export const actions: Actions = {
         const auth = await requireSession(getSession, '未登入');
         if (!auth.ok) return auth.response;
 
-        const formData = await request.formData();
+        const formDataResult = await readFormDataOrAbort(request);
+        if (!formDataResult.ok) return formDataResult.response;
+        const formData = formDataResult.formData;
         const payeeId = String(formData.get('payeeId') || '').trim();
         if (!payeeId) return fail(400, { message: 'Missing payeeId' });
 
@@ -268,6 +394,33 @@ export const actions: Actions = {
         }
 
         return { success: true, decryptedAccount: data };
+    },
+    revealClaimAccount: async ({ request, params, locals: { supabase, getSession } }) => {
+        const auth = await requireSession(getSession, '未登入');
+        if (!auth.ok) return auth.response;
+
+        const formDataResult = await readFormDataOrAbort(request);
+        if (!formDataResult.ok) return formDataResult.response;
+        const formData = formDataResult.formData;
+        const claimId = String(formData.get('claimId') || params.id || '').trim();
+        if (!claimId) return fail(400, { message: 'Missing claimId' });
+
+        const access = await getClaimAccessContext(supabase, claimId, auth.session.user.id);
+        if (!access.ok) return access.response;
+        if (!String(access.claim.bank_code || '').trim()) {
+            return fail(400, { message: '此請款單未使用自填帳戶' });
+        }
+
+        const detail = await getClaimBankSnapshot(supabase, claimId);
+        if (!detail.ok) {
+            console.error('Reveal Claim Account Error:', detail.error);
+            return fail(500, { message: '解密失敗' });
+        }
+
+        return {
+            success: true,
+            decryptedAccount: detail.detail?.bank_account || ''
+        };
     },
     editUpdate: async ({ request, params, locals: { supabase, getSession } }) => {
         const auth = await requireSession(getSession);
@@ -294,7 +447,9 @@ export const actions: Actions = {
             return fail(400, { message: 'Only draft or rejected claims can be updated' });
         }
 
-        const formData = await request.formData();
+        const formDataResult = await readFormDataOrAbort(request);
+        if (!formDataResult.ok) return formDataResult.response;
+        const formData = formDataResult.formData;
         const description = String(formData.get('description') || '').trim();
         if (!description) {
             return fail(400, { message: 'Description is required' });
@@ -326,7 +481,8 @@ export const actions: Actions = {
             return fail(400, { message: 'Only draft or rejected claims can be submitted' });
         }
 
-        await request.formData();
+        const formDataResult = await readFormDataOrAbort(request);
+        if (!formDataResult.ok) return formDataResult.response;
 
         const approverCheck = await ensureApproverAssigned(supabase, claim.applicant_id);
         if (!approverCheck.ok) {
@@ -429,7 +585,9 @@ export const actions: Actions = {
         const { session } = auth;
 
         const { id } = params;
-        const formData = await request.formData();
+        const formDataResult = await readFormDataOrAbort(request);
+        if (!formDataResult.ok) return formDataResult.response;
+        const formData = formDataResult.formData;
         const comment = String(formData.get('comment') || '').trim();
 
         const reviewContext = await resolveReviewContext(supabase, id, session.user.id);
@@ -458,7 +616,9 @@ export const actions: Actions = {
         const { session } = auth;
 
         const { id } = params;
-        const formData = await request.formData();
+        const formDataResult = await readFormDataOrAbort(request);
+        if (!formDataResult.ok) return formDataResult.response;
+        const formData = formDataResult.formData;
         const comment = String(formData.get('comment') || '').trim();
 
         if (!comment) return fail(400, { message: '請提供駁回原因' });
@@ -524,14 +684,11 @@ export const actions: Actions = {
             await supabase.storage.from('claims').remove(paths);
         }
 
-        const { error: deleteError } = await supabase
-            .from('claims')
-            .delete()
-            .eq('id', id)
-            .eq('applicant_id', session.user.id)
-            .in('status', Array.from(EDITABLE_CLAIM_STATUSES));
-
-        if (deleteError) return fail(500, { message: 'Delete failed' });
+        const deleteResult = await deleteClaimCascade(supabase, id);
+        if (!deleteResult.ok) {
+            console.error('Delete claim failed:', deleteResult.error);
+            return fail(500, { message: 'Delete failed' });
+        }
         throw redirect(303, '/claims');
     },
 
@@ -548,7 +705,9 @@ export const actions: Actions = {
             return fail(400, { message: 'Attachments are not allowed in current claim status' });
         }
 
-        const formData = await request.formData();
+        const formDataResult = await readFormDataOrAbort(request);
+        if (!formDataResult.ok) return formDataResult.response;
+        const formData = formDataResult.formData;
         const file = formData.get('file') as File | null;
         const itemId = String(formData.get('item_id') || '');
 
@@ -624,7 +783,9 @@ export const actions: Actions = {
             return fail(400, { message: 'Attachments are not editable in current claim status' });
         }
 
-        const formData = await request.formData();
+        const formDataResult = await readFormDataOrAbort(request);
+        if (!formDataResult.ok) return formDataResult.response;
+        const formData = formDataResult.formData;
         const itemId = String(formData.get('item_id') || '');
         if (!itemId) return fail(400, { message: 'Item ID is required' });
 
@@ -676,7 +837,9 @@ export const actions: Actions = {
             return fail(400, { message: 'Only pending supplement claims can update voucher decisions' });
         }
 
-        const formData = await request.formData();
+        const formDataResult = await readFormDataOrAbort(request);
+        if (!formDataResult.ok) return formDataResult.response;
+        const formData = formDataResult.formData;
         const itemId = String(formData.get('item_id') || '').trim();
         const status = String(formData.get('attachment_status') || '').trim();
         const date = String(formData.get('date') || '').trim();
@@ -767,7 +930,9 @@ export const actions: Actions = {
             return fail(400, { message: 'Only pending finance claims can be adjusted' });
         }
 
-        const formData = await request.formData();
+        const formDataResult = await readFormDataOrAbort(request);
+        if (!formDataResult.ok) return formDataResult.response;
+        const formData = formDataResult.formData;
         const itemId = String(formData.get('item_id') || '').trim();
         const category = String(formData.get('category') || '').trim();
         const amountRaw = String(formData.get('amount') || '').replaceAll(',', '').trim();
@@ -869,7 +1034,9 @@ export const actions: Actions = {
         const { session } = auth;
 
         const { id } = params;
-        const formData = await request.formData();
+        const formDataResult = await readFormDataOrAbort(request);
+        if (!formDataResult.ok) return formDataResult.response;
+        const formData = formDataResult.formData;
         const value = formData.get('value') === 'true';
 
         // Fetch claim to check role

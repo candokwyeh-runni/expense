@@ -20,6 +20,7 @@
     import { timedFetch } from "$lib/client/timed-fetch";
     import { page } from "$app/state";
     import { invalidateAll } from "$app/navigation";
+    import { browser } from "$app/environment";
     import RoleApproverPanel from "$lib/components/layout/RoleApproverPanel.svelte";
     import BankAccountSection from "$lib/components/layout/BankAccountSection.svelte";
     import { UI_MESSAGES } from "$lib/constants/ui-messages";
@@ -194,6 +195,7 @@
     });
 
     $effect(() => {
+        if (!browser) return;
         if (open) {
             void untrack(() => refreshUserSnapshot());
         }

@@ -112,8 +112,7 @@ export async function enqueuePayeeRequestNotifications({
             reason,
             proposed_data,
             requested_by,
-            requested_by_profile:profiles!payee_change_requests_requested_by_fkey(id, full_name, email),
-            reviewed_by_profile:profiles!payee_change_requests_reviewed_by_fkey(id, full_name, email)
+            reviewed_by
         `)
         .eq("id", requestId)
         .maybeSingle();
@@ -136,22 +135,39 @@ export async function enqueuePayeeRequestNotifications({
         payeeNameFromDb = payeeRow?.name || null;
     }
 
-    const { data: actorProfile } = await supabase
-        .from("profiles")
-        .select("id, full_name, email")
-        .eq("id", actorId)
-        .maybeSingle();
+    const [actorProfileResponse, financeUsersResponse, requesterProfileResponse] = await Promise.all([
+        supabase
+            .from("profiles")
+            .select("id, full_name, email")
+            .eq("id", actorId)
+            .maybeSingle(),
+        supabase
+            .from("profiles")
+            .select("id, email")
+            .eq("is_finance", true)
+            .eq("is_active", true),
+        request.requested_by
+            ? supabase
+                .from("profiles")
+                .select("id, full_name, email")
+                .eq("id", request.requested_by)
+                .maybeSingle()
+            : Promise.resolve({ data: null, error: null } as const)
+    ]);
 
-    const { data: financeUsers } = await supabase
-        .from("profiles")
-        .select("id, email")
-        .eq("is_finance", true)
-        .eq("is_active", true);
+    if (actorProfileResponse.error) {
+        console.error("[notify:payee] actor profile query error", actorProfileResponse.error);
+    }
+    if (financeUsersResponse.error) {
+        console.error("[notify:payee] finance users query error", financeUsersResponse.error);
+    }
+    if (requesterProfileResponse.error) {
+        console.error("[notify:payee] requester profile query error", requesterProfileResponse.error);
+    }
 
-    // Supabase FK joins are typed as arrays; safely unwrap to single objects.
-    const requesterProfile: any = Array.isArray(request.requested_by_profile)
-        ? request.requested_by_profile[0]
-        : request.requested_by_profile;
+    const actorProfile = actorProfileResponse.data;
+    const financeUsers = financeUsersResponse.data || [];
+    const requesterProfile = requesterProfileResponse.data;
 
     const recipients = resolveRecipients({
         eventCode,

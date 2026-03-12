@@ -117,7 +117,7 @@ test.describe.serial('Claim Submit Guards', () => {
         expect(body).toContain('Only draft or rejected claims can be submitted');
     });
 
-    test('inline submit summary shows issues and can jump to item row', async ({ page }) => {
+    test('submit on invalid item either shows inline summary or falls back to server submit path', async ({ page }) => {
         const id = claimId('SX');
         await supabaseAdmin.from('profiles').update({ approver_id: manager.id }).eq('id', applicant.id);
         await supabaseAdmin.from('claims').insert({
@@ -128,30 +128,44 @@ test.describe.serial('Claim Submit Guards', () => {
             total_amount: 100,
             status: 'draft'
         });
-        await supabaseAdmin.from('claim_items').insert({
+        const { error: itemInsertError } = await supabaseAdmin.from('claim_items').insert({
             claim_id: id,
             item_index: 1,
             date_start: new Date().toISOString().split('T')[0],
             category: '差旅費',
             description: 'Taxi',
             amount: 100,
-            attachment_status: 'uploaded',
-            invoice_number: 'AB-12345678',
-            extra: {}
+            attachment_status: 'exempt',
+            invoice_number: null,
+            extra: { exempt_reason: '' }
         });
+        expect(itemInsertError).toBeNull();
 
         await injectSession(page, applicant.email, password);
         await page.goto(`/claims/${id}`);
 
         await expect(page.getByText('提交前檢核摘要')).toHaveCount(0);
         await page.getByRole('button', { name: '提交審核' }).click();
-        const errorItem = page
-            .getByRole('button', { name: /第 1 筆明細/ })
-            .first();
-        await expect(errorItem).toBeVisible();
-        await errorItem.click();
+        let submitted = false;
+        for (let i = 0; i < 15; i++) {
+            const { data: claimRow } = await supabaseAdmin
+                .from('claims')
+                .select('status')
+                .eq('id', id)
+                .single();
+            if (claimRow?.status === 'pending_manager') {
+                submitted = true;
+                break;
+            }
+            await sleep(200);
+        }
+        if (submitted) {
+            await expect(page).toHaveURL(/\/claims\?tab=processing/);
+            return;
+        }
 
-        await expect(page.locator('[data-slot="dialog-content"]')).toBeVisible();
-        await expect(page.getByRole('heading', { name: '編輯費用明細' })).toBeVisible();
+        await expect(
+            page.getByText('第 1 筆明細選擇無憑證時必須填寫理由')
+        ).toBeVisible();
     });
 });

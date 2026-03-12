@@ -10,9 +10,27 @@ import { supabaseHandle } from '$lib/supabase';
 import { sequence } from '@sveltejs/kit/hooks';
 import { redirect, type Handle } from '@sveltejs/kit';
 
+function isRequestAbortError(error: unknown): boolean {
+    const text = String(
+        (error as any)?.message ||
+        (error as any)?.cause?.message ||
+        error ||
+        ''
+    ).toLowerCase();
+    return text === 'aborted' || text.includes('request aborted');
+}
+
 const timingHandle: Handle = async ({ event, resolve }) => {
     const start = performance.now();
-    const response = await resolve(event);
+    let response: Response;
+    try {
+        response = await resolve(event);
+    } catch (error) {
+        if (isRequestAbortError(error)) {
+            return new Response(null, { status: 499 });
+        }
+        throw error;
+    }
     const elapsedMs = performance.now() - start;
     const elapsed = `${elapsedMs.toFixed(1)}ms`;
 

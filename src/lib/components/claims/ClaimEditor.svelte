@@ -1,6 +1,7 @@
 <script lang="ts">
     import { enhance, deserialize, applyAction } from "$app/forms";
     import { goto } from "$app/navigation";
+    import { browser } from "$app/environment";
     import { type Snippet, untrack } from "svelte";
     import { toast } from "svelte-sonner";
     import {
@@ -54,6 +55,7 @@
         applicant_bank_account_tail?: string | null;
         bank_code?: string | null;
         bank_account?: string | null;
+        claim_bank_account_tail?: string | null;
         payee_bank?: string | null;
         payee_bank_account_tail?: string | null;
         created_at?: string | null;
@@ -102,6 +104,7 @@
         sidePanel,
         onDeleteSubmit = undefined,
         revealPayeeAccountAction = "?/revealPayeeAccount",
+        revealClaimAccountAction = "?/revealClaimAccount",
         revealApplicantAccountAction = "?/revealApplicantAccount",
         supplementItemAction = "?/updateItemVoucher",
     }: {
@@ -138,6 +141,7 @@
         sidePanel?: Snippet;
         onDeleteSubmit?: (e: SubmitEvent) => void;
         revealPayeeAccountAction?: string;
+        revealClaimAccountAction?: string;
         revealApplicantAccountAction?: string;
         supplementItemAction?: string;
     } = $props();
@@ -334,6 +338,9 @@
     const selectedPayee = $derived(
         payees.find((p) => p.id === payeeId) || null,
     );
+    const hasClaimFloatingAccount = $derived(
+        claimType !== "employee" && Boolean(String(claim.bank_code || "").trim()),
+    );
     const isEditablePayeeAccount = $derived(
         claimType === "vendor" && Boolean(selectedPayee?.editable_account),
     );
@@ -343,6 +350,8 @@
             ? String(claim.applicant_bank || "").trim()
             : isEditablePayeeAccount
               ? bankCode || String(selectedPayee?.bank || "").trim()
+            : hasClaimFloatingAccount
+              ? String(claim.bank_code || "").trim()
               : selectedPayee?.bank || claim.payee_bank || "",
     );
     const selectedPayeeId = $derived.by(
@@ -350,12 +359,18 @@
             selectedPayee?.id || (isCreate ? "" : String(claim.payee_id || "")),
     );
     const bankRevealKey = $derived(
-        claimType === "employee" ? applicantRevealId : selectedPayeeId,
+        claimType === "employee"
+            ? applicantRevealId
+            : hasClaimFloatingAccount
+              ? String(claim.id || "").trim()
+              : selectedPayeeId,
     );
     const selectedPayeeBankAccountMasked = $derived.by(() => {
         const tail =
             claimType === "employee"
                 ? String(claim.applicant_bank_account_tail || "").trim()
+                : hasClaimFloatingAccount
+                  ? String(claim.claim_bank_account_tail || "").trim()
                 : String(
                       selectedPayee?.bank_account_tail ||
                           claim.payee_bank_account_tail ||
@@ -408,6 +423,7 @@
     let lastPayeeSelectionKey = $state("");
 
     async function preloadEditablePayeeBankAccount(targetPayeeId: string) {
+        if (!browser) return;
         if (!targetPayeeId) return;
         try {
             const formData = new FormData();
@@ -431,6 +447,7 @@
     }
 
     $effect(() => {
+        if (!browser) return;
         if (!isEditable || claimType === "employee") return;
         const selectionKey = `${claimType}:${payeeId}`;
         if (selectionKey === lastPayeeSelectionKey) return;
@@ -473,6 +490,17 @@
             return;
         }
 
+        if (claimType !== "employee" && hasClaimFloatingAccount) {
+            const decrypted = String(claim.bank_account || "").trim();
+            if (decrypted) {
+                revealedAccounts = {
+                    ...revealedAccounts,
+                    [id]: decrypted,
+                };
+                return;
+            }
+        }
+
         revealingById = { ...revealingById, [id]: true };
         try {
             const formData = new FormData();
@@ -480,6 +508,9 @@
             if (claimType === "employee") {
                 formData.append("targetId", id);
                 action = revealApplicantAccountAction;
+            } else if (hasClaimFloatingAccount) {
+                formData.append("claimId", id);
+                action = revealClaimAccountAction;
             } else {
                 formData.append("payeeId", id);
             }

@@ -14,6 +14,7 @@
 	import { createBrowserSupabaseClient } from "$lib/supabase";
 	import { onMount } from "svelte";
 	import { page } from "$app/state";
+	import { browser } from "$app/environment";
 	import { Toaster } from "svelte-sonner";
 	import Sidebar from "$lib/components/layout/Sidebar.svelte";
 	import { Menu, X } from "lucide-svelte";
@@ -22,13 +23,12 @@
 	// 接收來自 +layout.server.ts 的資料 (data) 及其子頁面 (children)
 	let { data, children }: { data: LayoutData; children: any } = $props();
 
-	// 初始化瀏覽器端 Supabase Client
-	const supabase = createBrowserSupabaseClient();
-
 	/**
 	 * 生命週期：掛載時執行
 	 */
 	onMount(() => {
+		if (!browser) return;
+		const supabase = createBrowserSupabaseClient();
 		const {
 			data: { subscription },
 		} = supabase.auth.onAuthStateChange((event, _session) => {

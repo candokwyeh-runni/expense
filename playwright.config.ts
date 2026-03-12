@@ -4,6 +4,12 @@
  */
 import { defineConfig, devices } from '@playwright/test';
 
+const webServerEnv = {
+    ...process.env,
+    FORCE_COLOR: undefined,
+    NO_COLOR: undefined,
+} as unknown as NodeJS.ProcessEnv;
+
 export default defineConfig({
     testDir: './tests',
     testMatch: /(.+\.)?(spec)\.[jt]s/,
@@ -25,6 +31,7 @@ export default defineConfig({
     ],
     webServer: {
         command: 'npm run dev',
+        env: webServerEnv,
         port: 5173,
         reuseExistingServer: true,
     },
