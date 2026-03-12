@@ -23,6 +23,9 @@ import {
 } from '$lib/server/claims/review-policy';
 import { getActiveExpenseCategoryNames, getExpenseCategories } from '$lib/server/expense-categories';
 import { triggerNotificationDrain } from '$lib/server/notifications/qstash-trigger';
+import { createClient } from '@supabase/supabase-js';
+import { PUBLIC_SUPABASE_URL } from '$env/static/public';
+import { env } from '$env/dynamic/private';
 
 async function queueNotificationDrain(origin: string, reason: string): Promise<void> {
     try {
@@ -30,6 +33,13 @@ async function queueNotificationDrain(origin: string, reason: string): Promise<v
     } catch (drainError) {
         console.error('[notify:qstash] trigger failed:', reason, drainError);
     }
+}
+
+function getServiceRoleClient() {
+    if (!env.SUPABASE_SERVICE_ROLE_KEY) {
+        throw new Error('SUPABASE_SERVICE_ROLE_KEY 未設定');
+    }
+    return createClient(PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 }
 
 async function requireSession(getSession: () => Promise<any>, message = 'Unauthorized') {
@@ -678,13 +688,15 @@ export const actions: Actions = {
             return fail(400, { message: 'Only draft or rejected claims can be deleted' });
         }
 
-        const { data: files } = await supabase.storage.from('claims').list(id);
+        const deleteClient = getServiceRoleClient();
+
+        const { data: files } = await deleteClient.storage.from('claims').list(id);
         if (files && files.length > 0) {
             const paths = files.map((f) => `${id}/${f.name}`);
-            await supabase.storage.from('claims').remove(paths);
+            await deleteClient.storage.from('claims').remove(paths);
         }
 
-        const deleteResult = await deleteClaimCascade(supabase, id);
+        const deleteResult = await deleteClaimCascade(deleteClient, id);
         if (!deleteResult.ok) {
             console.error('Delete claim failed:', deleteResult.error);
             return fail(500, { message: 'Delete failed' });
