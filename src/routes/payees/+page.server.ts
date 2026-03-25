@@ -792,13 +792,18 @@ export const actions: Actions = {
             .eq('id', payeeId);
 
         if (deleteError) {
-            console.error('Delete Payee Error:', deleteError);
-            // 處理 FK 衝突 (PostgreSQL error code 23503)
+            // FK 衝突是預期行為：有關聯資料時禁止永久刪除，降低為 warn 避免誤報
             if (deleteError.code === '23503') {
+                console.warn('Delete Payee Blocked (expected_fk_conflict):', {
+                    code: deleteError.code,
+                    message: deleteError.message,
+                    details: deleteError.details
+                });
                 return fail(400, {
                     message: '無法刪除：此收款人已有關聯之報銷案件或申請記錄。請改成「停用」處理。'
                 });
             }
+            console.error('Delete Payee Error:', deleteError);
             return fail(500, { message: '刪除失敗：' + deleteError.message });
         }
 
